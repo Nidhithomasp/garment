@@ -63,10 +63,13 @@ function finalizeLevel(results, onComplete) {
   const totalTime         = results.reduce((s, r) => s + r.time_taken, 0);
   const hesitations       = results.filter((r) => r.first_action_time > 2).length;
   const totalEdits        = results.reduce((s, r) => s + r.total_edits, 0);
-  const accuracy          = total > 0 ? correctCount / total : 0;
+  
+  // FIX 1: Accuracy calculation changed to percentage
+  const accuracy          = total > 0 ? (correctCount / total) * 100 : 0;
 
   onComplete({
-    accuracy:         Number(accuracy.toFixed(4)),
+    // FIX 2: Precision fixed to 2 decimals
+    accuracy:         Number(accuracy.toFixed(2)),
     completion_time:  Number(totalTime.toFixed(2)),
     errors:           total - correctCount + wrongSubmitTotal,
     hesitations,
@@ -77,18 +80,18 @@ function finalizeLevel(results, onComplete) {
       skipped_questions:  skippedCount,
       timed_out_questions: timeoutCount,
       wrong_submits:      wrongSubmitTotal,
-      avg_question_time:  Number((totalTime / total).toFixed(4)),
+      // FIX 3: Precision fixed to 2 decimals
+      avg_question_time:  Number((totalTime / total).toFixed(2)),
       question_results:   results,
     },
   });
 }
 
 export default function LabelCheckingTask({ level, onComplete }) {
-  const timerRef          = useRef(null);
-  const startTimeRef      = useRef(Date.now());
+  const timerRef           = useRef(null);
+  const startTimeRef       = useRef(Date.now());
   const firstActionTimeRef = useRef(null);
 
-  // FIX 1: Mirror mutable per-question state in refs so timer closure reads live values
   const submitAttemptsRef  = useRef(0);
   const wrongSubmitsRef    = useRef(0);
   const editedFieldsRef    = useRef(new Set());
@@ -96,7 +99,6 @@ export default function LabelCheckingTask({ level, onComplete }) {
   const noMismatchRef      = useRef(false);
   const labelStateRef      = useRef({});
 
-  // FIX 2: Store accumulated results in a ref so saveResultAndMove never reads stale state
   const questionResultsRef = useRef([]);
 
   const questions      = LABEL_TASK_DATA[level.key];
@@ -125,15 +127,12 @@ export default function LabelCheckingTask({ level, onComplete }) {
     return () => clearInterval(timerRef.current);
   }, [questionIdx, level.key]);
 
-  // ── Question loader ───────────────────────────────────────────────────────
-
   function loadQuestion(idx) {
     clearInterval(timerRef.current);
 
     const q = questions[idx];
     const initialLabel = { ...q.label };
 
-    // Reset state
     setLabelState(initialLabel);
     setEditingField(null);
     setFeedback(null);
@@ -143,7 +142,6 @@ export default function LabelCheckingTask({ level, onComplete }) {
     setEditedFields(new Set());
     setChangeCount(0);
 
-    // Reset refs in sync so timer closure always reads fresh values
     labelStateRef.current      = initialLabel;
     submitAttemptsRef.current  = 0;
     wrongSubmitsRef.current    = 0;
@@ -165,7 +163,6 @@ export default function LabelCheckingTask({ level, onComplete }) {
       setTimeLeft((prev) => {
         if (prev <= 1) {
           clearInterval(timerRef.current);
-          // FIX 3: handleTimeout reads from refs — no stale closure problem
           handleTimeoutFromRefs();
           return 0;
         }
@@ -173,8 +170,6 @@ export default function LabelCheckingTask({ level, onComplete }) {
       });
     }, 1000);
   }
-
-  // ── Helpers ───────────────────────────────────────────────────────────────
 
   function markFirstAction() {
     if (firstActionTimeRef.current === null) {
@@ -216,7 +211,6 @@ export default function LabelCheckingTask({ level, onComplete }) {
     return FIELD_ORDER.every((f) => reference[f.key] === label[f.key]);
   }
 
-  // FIX 4: saveResultAndMove uses the ref for accumulated results — never stale
   function saveResultAndMove(result) {
     const updated = [...questionResultsRef.current, result];
     questionResultsRef.current = updated;
@@ -227,8 +221,6 @@ export default function LabelCheckingTask({ level, onComplete }) {
       finalizeLevel(updated, onComplete);
     }
   }
-
-  // ── Submit / Skip / Timeout ───────────────────────────────────────────────
 
   function handleSubmit() {
     markFirstAction();
@@ -288,7 +280,6 @@ export default function LabelCheckingTask({ level, onComplete }) {
     setTimeout(() => saveResultAndMove(result), 500);
   }
 
-  // FIX 5: Reads exclusively from refs — called safely from inside setTimeLeft updater
   function handleTimeoutFromRefs() {
     const elapsed = (Date.now() - startTimeRef.current) / 1000;
     setFeedback("timeout");
@@ -311,14 +302,12 @@ export default function LabelCheckingTask({ level, onComplete }) {
       time_taken:            Number(elapsed.toFixed(2)),
     };
 
-    // FIX 6: Advance after a short delay using functional setQuestionIdx so
-    // we don't depend on stale questionIdx state
     setTimeout(() => {
       const updated = [...questionResultsRef.current, result];
       questionResultsRef.current = updated;
 
       if (updated.length < totalQuestions) {
-        setQuestionIdx(updated.length); // next index = number of completed results
+        setQuestionIdx(updated.length);
       } else {
         finalizeLevel(updated, onComplete);
       }
@@ -326,8 +315,6 @@ export default function LabelCheckingTask({ level, onComplete }) {
   }
 
   const danger = timeLeft !== null && timeLeft <= 5;
-
-  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div style={styles.wrapper}>

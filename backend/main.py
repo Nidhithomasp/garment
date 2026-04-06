@@ -1,45 +1,26 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import Optional
 import uuid
-import math
-from datetime import datetime
 
-app = FastAPI(title="Garment Work Stress Monitoring System")
+app = FastAPI()
 
+# ---------------- CORS ----------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ---------------- STORAGE ----------------
 sessions = {}
-behavior_data = {}
 
-# ─────────────────────────────────────────────────────────────
+# ---------------- MODELS ----------------
 
 class SessionStart(BaseModel):
     worker_id: Optional[str] = None
-
-class StylusEvent(BaseModel):
-    session_id: str
-    task_id: int
-    level: str
-    x: float
-    y: float
-    pressure: float
-    timestamp: float
-    pointer_type: str
-    event_type: str
-
-class BehaviorBatch(BaseModel):
-    session_id: str
-    task_id: int
-    level: str
-    events: List[StylusEvent]
 
 class SelfReport(BaseModel):
     stress: float
@@ -47,21 +28,7 @@ class SelfReport(BaseModel):
     difficulty: float
 
 class TaskMetrics(BaseModel):
-    total_bundles: Optional[int] = None
-    wrong_bundles: Optional[int] = None
-    correct_selections: Optional[int] = None
-    wrong_selections: Optional[int] = 0
-    missed_bundles: Optional[int] = 0
-    submit_attempts_total: Optional[int] = 0
-    wrong_submits: Optional[int] = 0
-    total_clicks: Optional[int] = 0
-    unique_clicks: Optional[int] = 0
-    repeated_clicks: Optional[int] = 0
-    first_action_time: Optional[float] = None
-    precision: Optional[float] = None
-    recall: Optional[float] = None
-    f1_score: Optional[float] = None
-    timed_out: Optional[bool] = False
+    efficiency: Optional[float] = 100
 
 class TaskComplete(BaseModel):
     session_id: str
@@ -75,210 +42,117 @@ class TaskComplete(BaseModel):
     self_report: SelfReport
     task_metrics: Optional[TaskMetrics] = None
 
-# ─────────────────────────────────────────────────────────────
+# ---------------- HELPERS ----------------
 
-def normalize(value, min_val, max_val):
-    if max_val == min_val:
-        return 0
-    return max(0, min(1, (value - min_val) / (max_val - min_val)))
+def normalize(x, max_val):
+    return min(1, x / max_val)
 
-# ─────────────────────────────────────────────────────────────
-
-def compute_stylus_features(events):
-    if not events:
-        return {
-            "pressure_variation": 0,
-            "speed_variation": 0,
-            "hesitation_count": 0,
-            "avg_pressure": 0,
-        }
-
-    pressures = [e["pressure"] for e in events]
-    avg_pressure = sum(pressures) / len(pressures)
-
-    pressure_var = math.sqrt(
-        sum((p - avg_pressure) ** 2 for p in pressures) / len(pressures)
-    )
-
-    speeds = []
-    hesitations = 0
-
-    for i in range(1, len(events)):
-        dt = events[i]["timestamp"] - events[i - 1]["timestamp"]
-        if dt <= 0:
-            continue
-
-        dx = events[i]["x"] - events[i - 1]["x"]
-        dy = events[i]["y"] - events[i - 1]["y"]
-
-        dist = math.sqrt(dx**2 + dy**2)
-        speed = dist / dt
-        speeds.append(speed)
-
-        if dt > 800:
-            hesitations += 1
-
-    avg_speed = sum(speeds) / len(speeds) if speeds else 0
-
-    speed_var = (
-        math.sqrt(sum((s - avg_speed) ** 2 for s in speeds) / len(speeds))
-        if len(speeds) > 1
-        else 0
-    )
-
-    return {
-        "pressure_variation": pressure_var,
-        "speed_variation": speed_var,
-        "hesitation_count": hesitations,
-        "avg_pressure": avg_pressure,
-    }
-
-# ─────────────────────────────────────────────────────────────
-
-def compute_stress_score(task_data, baseline=None):
-
-    stylus = task_data.get("stylus_features", {})
-    sr = task_data.get("self_report", {})
-    tm = task_data.get("task_metrics", {})
-
-    pv = normalize(stylus.get("pressure_variation", 0), 0, 0.5)
-    sv = normalize(stylus.get("speed_variation", 0), 0, 300)
-    hes = normalize(stylus.get("hesitation_count", 0), 0, 20)
-    corr = normalize(task_data.get("corrections", 0), 0, 10)
-    err = normalize(task_data.get("errors", 0), 0, 10)
-    ct = normalize(task_data.get("completion_time", 30), 5, 60)
-
-    self_report_norm = normalize(
-        (sr.get("stress",1) + sr.get("fatigue",1) + sr.get("difficulty",1)) / 3,
-        1, 5
-    )
-
-    # TASK 3 PENALTIES
-    total_b = max(1, tm.get("wrong_bundles", 1))
-
-    miss_penalty = normalize(tm.get("missed_bundles", 0), 0, total_b)
-    false_alarm_penalty = normalize(tm.get("wrong_selections", 0), 0, 5)
-    wrong_submit_penalty = normalize(tm.get("wrong_submits", 0), 0, 5)
-
+def compute_stress(task):
     score = (
-        0.15 * pv +
-        0.10 * sv +
-        0.10 * hes +
-        0.10 * corr +
-        0.10 * err +
-        0.10 * ct +
-        0.10 * self_report_norm +
-        0.06 * miss_penalty +
-        0.04 * false_alarm_penalty +
-        0.05 * wrong_submit_penalty
+        0.3 * normalize(task["errors"], 10) +
+        0.3 * normalize(task["completion_time"], 60) +
+        0.4 * (1 - normalize(task["accuracy"], 100)) +
+        0.1 * normalize(task["hesitations"], 10) +
+        0.1 * normalize(task["corrections"], 10)
     )
 
-    score = max(0, min(1, score))
+    # clamp to 1
+    score = min(score, 1)
 
-    if score <= 0.33:
+    if score < 0.33:
         label = "Low"
-    elif score <= 0.66:
+    elif score < 0.66:
         label = "Medium"
     else:
         label = "High"
 
-    return {"score": round(score,4), "label": label}
+    return {
+        "score": round(score, 3),
+        "label": label
+    }
 
-# ─────────────────────────────────────────────────────────────
+# ---------------- API ----------------
 
 @app.post("/api/session/start")
 def start_session(body: SessionStart):
     sid = str(uuid.uuid4())
-
-    sessions[sid] = {
-        "session_id": sid,
-        "tasks": {},
-        "baseline": None
-    }
-
-    behavior_data[sid] = {}
-
+    sessions[sid] = []
     return {"session_id": sid}
 
-# ─────────────────────────────────────────────────────────────
-
-@app.post("/api/behavior")
-def store_behavior(batch: BehaviorBatch):
-
-    sid = batch.session_id
-    key = f"{batch.task_id}_{batch.level}"
-
-    if key not in behavior_data[sid]:
-        behavior_data[sid][key] = []
-
-    behavior_data[sid][key].extend([e.dict() for e in batch.events])
-
-    return {"stored": len(batch.events)}
-
-# ─────────────────────────────────────────────────────────────
 
 @app.post("/api/task-complete")
 def task_complete(body: TaskComplete):
+    task = body.dict()
 
-    sid = body.session_id
-    key = f"{body.task_id}_{body.level}"
+    # compute stress
+    stress = compute_stress(task)
+    task["stress"] = stress
 
-    events = behavior_data.get(sid, {}).get(key, [])
+    # store
+    if body.session_id not in sessions:
+        sessions[body.session_id] = []
 
-    stylus = compute_stylus_features(events)
+    sessions[body.session_id].append(task)
 
-    tm = body.task_metrics.dict() if body.task_metrics else {}
-
-    task_data = {
-        "task_id": body.task_id,
-        "level": body.level,
-        "accuracy": body.accuracy,
-        "completion_time": body.completion_time,
-        "errors": body.errors,
-        "hesitations": body.hesitations,
-        "corrections": body.corrections,
-        "self_report": body.self_report.dict(),
-        "stylus_features": stylus,
-        "task_metrics": tm
+    # ✅ RETURN FULL TASK DATA (IMPORTANT)
+    return {
+        "task_id": task["task_id"],
+        "level": task["level"],
+        "stress_score": stress["score"],
+        "stress_label": stress["label"],
+        "accuracy": task["accuracy"],
+        "completion_time": task["completion_time"],
+        "errors": task["errors"],
+        "hesitations": task["hesitations"],
+        "corrections": task["corrections"],
+        "self_report": task["self_report"],
+        "task_metrics": task.get("task_metrics", {})
     }
 
-    stress = compute_stress_score(task_data)
-
-    task_data["stress"] = stress
-
-    sessions[sid]["tasks"][key] = task_data
-
-    return {"status": "ok", "stress": stress}
-
-# ─────────────────────────────────────────────────────────────
 
 @app.get("/api/session/{sid}")
 def get_session(sid: str):
+    tasks = sessions.get(sid, [])
 
-    task_results = list(sessions[sid]["tasks"].values())
+    if not tasks:
+        return {
+            "task_results": [],
+            "overall_score": 0,
+            "overall_label": "Low"
+        }
 
-    if not task_results:
-        return {"overall_score": 0, "overall_label": "Low"}
+    results = []
+    scores = []
 
-    scores = [t["stress"]["score"] for t in task_results]
+    for t in tasks:
+        s = t["stress"]["score"]
+        scores.append(s)
+
+        results.append({
+            "task_id": t["task_id"],
+            "level": t["level"],
+            "stress_score": t["stress"]["score"],
+            "stress_label": t["stress"]["label"],
+            "accuracy": t["accuracy"],
+            "completion_time": t["completion_time"],
+            "errors": t["errors"],
+            "hesitations": t["hesitations"],
+            "corrections": t["corrections"],
+            "self_report": t["self_report"],
+            "task_metrics": t.get("task_metrics", {})
+        })
 
     overall = sum(scores) / len(scores)
 
-    if overall <= 0.33:
+    if overall < 0.33:
         label = "Low"
-    elif overall <= 0.66:
+    elif overall < 0.66:
         label = "Medium"
     else:
         label = "High"
 
     return {
-        "task_results": task_results,
-        "overall_score": round(overall,4),
+        "task_results": results,
+        "overall_score": round(overall, 3),
         "overall_label": label
     }
-
-# ─────────────────────────────────────────────────────────────
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}

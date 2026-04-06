@@ -68,12 +68,14 @@ function computePressureStats(pressureEvents) {
   if (!pressureEvents.length) {
     return { current: 0, avg: 0, variation: 0, min: 0, max: 0, count: 0 };
   }
+
   const values = pressureEvents.map((p) => p.pressure);
   const current = values[values.length - 1];
   const avg = values.reduce((a, b) => a + b, 0) / values.length;
   const variance =
     values.reduce((sum, v) => sum + (v - avg) ** 2, 0) / values.length;
   const std = Math.sqrt(variance);
+
   return {
     current: Number(current.toFixed(3)),
     avg: Number(avg.toFixed(3)),
@@ -84,14 +86,23 @@ function computePressureStats(pressureEvents) {
   };
 }
 
+function computeTotalDrawDistance(events) {
+  if (!events.length) return 0;
+  let total = 0;
+  for (let i = 1; i < events.length; i++) {
+    const dx = (events[i].x ?? 0) - (events[i - 1].x ?? 0);
+    const dy = (events[i].y ?? 0) - (events[i - 1].y ?? 0);
+    total += Math.sqrt(dx * dx + dy * dy);
+  }
+  return Number(total.toFixed(2));
+}
+
 export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
   const canvasRef = useRef(null);
   const timerRef = useRef(null);
 
-  // FIX 1: Store loaded image in a ref — never reload mid-stroke
   const loadedImageRef = useRef(null);
 
-  // FIX 2: Mirror mutable state in refs so timer closures read live values
   const markedDefectsRef = useRef([]);
   const falseMarksRef = useRef(0);
   const imageStartTimeRef = useRef(Date.now());
@@ -101,6 +112,12 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
   const timeUpRef = useRef(false);
   const pointerTypeRef = useRef("unknown");
   const imageIdxRef = useRef(0);
+
+  const strokeCountRef = useRef(0);
+  const classificationAttemptsRef = useRef(0);
+  const wrongClassificationAttemptsRef = useRef(0);
+  const strokePointCountsRef = useRef([]);
+  const boxAreasRef = useRef([]);
 
   const [timeLeft, setTimeLeft] = useState(null);
   const [timeUp, setTimeUp] = useState(false);
@@ -117,7 +134,7 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
 
   const [classificationOpen, setClassificationOpen] = useState(false);
   const [activeDefect, setActiveDefect] = useState(null);
-  const [wrongClassification, setWrongClassification] = useState(null); // stores the wrong answer they picked
+  const [wrongClassification, setWrongClassification] = useState(null);
 
   const [pointerType, setPointerType] = useState("unknown");
   const [pressureEvents, setPressureEvents] = useState([]);
@@ -129,10 +146,6 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
   const hasMultipleDefects = defects.length > 1;
   const pressureStats = computePressureStats(pressureEvents);
 
-  // ── Canvas draw ───────────────────────────────────────────────────────────
-
-  // FIX 3: Single draw function — uses already-loaded image ref,
-  // accepts boxes + live stroke as args so it never reads stale state
   const drawScene = useCallback(
     (boxes, extraStroke = []) => {
       const canvas = canvasRef.current;
@@ -154,7 +167,12 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
         ctx.strokeStyle = box.ok ? "#22c55e" : "#ef4444";
         ctx.lineWidth = 2.5;
         ctx.setLineDash([]);
-        ctx.strokeRect(box.minX, box.minY, box.maxX - box.minX, box.maxY - box.minY);
+        ctx.strokeRect(
+          box.minX,
+          box.minY,
+          box.maxX - box.minX,
+          box.maxY - box.minY
+        );
       });
 
       if (extraStroke.length > 1) {
@@ -172,7 +190,6 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
     [currentItem.image]
   );
 
-  // Load image whenever item changes, then draw
   useEffect(() => {
     loadedImageRef.current = null;
     const img = new Image();
@@ -187,12 +204,9 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
     };
   }, [currentItem.image, drawScene]);
 
-  // Redraw when committed boxes change (image already loaded)
   useEffect(() => {
     if (loadedImageRef.current) drawScene(strokeBoxes);
   }, [strokeBoxes, drawScene]);
-
-  // ── Reset ─────────────────────────────────────────────────────────────────
 
   function resetImageState() {
     setIsDrawing(false);
@@ -208,7 +222,6 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
     setLivePressure(0);
     setTimeUp(false);
 
-    // Reset refs immediately so timer closures read fresh values
     markedDefectsRef.current = [];
     falseMarksRef.current = 0;
     strokeBoxesRef.current = [];
@@ -217,6 +230,12 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
     firstDrawTimeRef.current = null;
     imageStartTimeRef.current = Date.now();
     pointerTypeRef.current = "unknown";
+
+    strokeCountRef.current = 0;
+    classificationAttemptsRef.current = 0;
+    wrongClassificationAttemptsRef.current = 0;
+    strokePointCountsRef.current = [];
+    boxAreasRef.current = [];
   }
 
   useEffect(() => {
@@ -226,9 +245,6 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
     resetImageState();
   }, [level.key]);
 
-  // ── Timer ─────────────────────────────────────────────────────────────────
-
-  // FIX 4: Timer reads from refs so stale closure is never an issue
   useEffect(() => {
     clearInterval(timerRef.current);
     timeUpRef.current = false;
@@ -238,7 +254,10 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
     if (level.key === "medium") duration = 15;
     if (level.key === "hard") duration = 10;
 
-    if (!duration) { setTimeLeft(null); return; }
+    if (!duration) {
+      setTimeLeft(null);
+      return;
+    }
 
     setTimeLeft(duration);
 
@@ -248,7 +267,6 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
           clearInterval(timerRef.current);
           timeUpRef.current = true;
           setTimeUp(true);
-          // FIX 5: finalizeImageFromRefs reads live refs, not stale closure
           setTimeout(() => finalizeImageFromRefs(), 250);
           return 0;
         }
@@ -259,9 +277,6 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
     return () => clearInterval(timerRef.current);
   }, [imageIdx, level.key]);
 
-  // ── Pointer helpers ───────────────────────────────────────────────────────
-
-  // FIX 6: Scale coordinates for CSS-resized canvas
   function getCanvasPoint(e) {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
@@ -273,22 +288,24 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
     };
   }
 
-  // FIX 7: Only record pressure on down/move, never on up (pressure = 0 after lift)
   function recordPressure(e) {
     const p = typeof e.pressure === "number" && e.pressure > 0 ? e.pressure : 0.5;
     const pt = e.pointerType || "mouse";
     const point = getCanvasPoint(e);
+
     pointerTypeRef.current = pt;
     setPointerType(pt);
     setLivePressure(Number(p.toFixed(3)));
+
     const event = {
-  pressure: p,
-  timestamp: Date.now() - imageStartTimeRef.current,
-  pointerType: pt,
-  eventType: e.type,
-  x: point.x,
-  y: point.y,
-};
+      pressure: p,
+      timestamp: Date.now() - imageStartTimeRef.current,
+      pointerType: pt,
+      eventType: e.type,
+      x: point.x,
+      y: point.y,
+    };
+
     pressureEventsRef.current = [...pressureEventsRef.current, event];
     setPressureEvents((prev) => [...prev, event]);
   }
@@ -297,9 +314,12 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
     if (classificationOpen || timeUpRef.current) return;
     e.preventDefault();
     recordPressure(e);
+
     if (firstDrawTimeRef.current === null) {
-      firstDrawTimeRef.current = (Date.now() - imageStartTimeRef.current) / 1000;
+      firstDrawTimeRef.current =
+        (Date.now() - imageStartTimeRef.current) / 1000;
     }
+
     setIsDrawing(true);
     setCurrentStroke([getCanvasPoint(e)]);
   }
@@ -308,16 +328,15 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
     if (!isDrawing || classificationOpen || timeUpRef.current) return;
     e.preventDefault();
     recordPressure(e);
+
     const updated = [...currentStroke, getCanvasPoint(e)];
     setCurrentStroke(updated);
-    // FIX 8: Pass strokeBoxes from ref — avoids stale state in tight render loop
     drawScene(strokeBoxesRef.current, updated);
   }
 
   function handlePointerUp(e) {
     if (!isDrawing || classificationOpen || timeUpRef.current) return;
     e.preventDefault();
-    // FIX 9: No recordPressure — pressure is always 0 on pointerUp
     setIsDrawing(false);
 
     if (currentStroke.length < 2) {
@@ -326,7 +345,13 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
       return;
     }
 
+    strokeCountRef.current += 1;
+    strokePointCountsRef.current.push(currentStroke.length);
+
     const box = getBoundingBox(currentStroke);
+    const area = Math.max(0, (box.maxX - box.minX) * (box.maxY - box.minY));
+    boxAreasRef.current.push(area);
+
     let matched = null;
 
     for (const defect of defects) {
@@ -345,7 +370,12 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
     if (matched) {
       const updatedMarked = [
         ...markedDefectsRef.current,
-        { id: matched.id, expectedType: matched.type, classificationCorrect: false, classified: false },
+        {
+          id: matched.id,
+          expectedType: matched.type,
+          classificationCorrect: false,
+          classified: false,
+        },
       ];
       markedDefectsRef.current = updatedMarked;
       setMarkedDefects(updatedMarked);
@@ -362,6 +392,8 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
 
   function handleClassification(selectedType) {
     if (!activeDefect) return;
+
+    classificationAttemptsRef.current += 1;
     const correct = selectedType === activeDefect.type;
 
     if (correct) {
@@ -376,7 +408,8 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
       setClassificationOpen(false);
       setWrongClassification(null);
     } else {
-      // If timer already ran out, don't keep them stuck — just close
+      wrongClassificationAttemptsRef.current += 1;
+
       if (timeUpRef.current) {
         const updatedMarked = markedDefectsRef.current.map((d) =>
           d.id === activeDefect.id
@@ -390,30 +423,49 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
         setWrongClassification(null);
         return;
       }
-      // Wrong — keep modal open, show error, let them try again
+
       setWrongClassification(selectedType);
     }
   }
 
-  // ── Finalize ──────────────────────────────────────────────────────────────
-
-  // FIX 10: Reads exclusively from refs — safe to call from timer or button
   function finalizeImageFromRefs() {
     const marked = markedDefectsRef.current;
     const falseMks = falseMarksRef.current;
     const pEvents = pressureEventsRef.current;
-    // Use imageIdxRef — imageIdx is stale inside timer/callback closures
     const currentIdx = imageIdxRef.current;
     const item = DEFECT_TASK_DATA[level.key][currentIdx];
     const defs = item.defects;
 
-    // Flush this image's stylus events to the parent for /api/behavior
     if (onBehavior && pEvents.length > 0) {
       onBehavior(pEvents);
     }
 
-    const correctClassifications = marked.filter((d) => d.classificationCorrect).length;
+    const correctClassifications = marked.filter(
+      (d) => d.classificationCorrect
+    ).length;
     const stats = computePressureStats(pEvents);
+
+    const avgStrokePoints =
+      strokePointCountsRef.current.length > 0
+        ? Number(
+            (
+              strokePointCountsRef.current.reduce((a, b) => a + b, 0) /
+              strokePointCountsRef.current.length
+            ).toFixed(2)
+          )
+        : 0;
+
+    const avgBoxArea =
+      boxAreasRef.current.length > 0
+        ? Number(
+            (
+              boxAreasRef.current.reduce((a, b) => a + b, 0) /
+              boxAreasRef.current.length
+            ).toFixed(2)
+          )
+        : 0;
+
+    const totalDrawDistance = computeTotalDrawDistance(pEvents);
 
     const result = {
       image_index: currentIdx,
@@ -423,9 +475,12 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
       missed_defects: defs.length - marked.length,
       false_marks: falseMks,
       correct_classifications: correctClassifications,
-      classification_accuracy: defs.length > 0 ? correctClassifications / defs.length : 0,
+      classification_accuracy:
+        defs.length > 0 ? correctClassifications / defs.length : 0,
       detection_accuracy: defs.length > 0 ? marked.length / defs.length : 0,
-      time_taken: Number(((Date.now() - imageStartTimeRef.current) / 1000).toFixed(2)),
+      time_taken: Number(
+        ((Date.now() - imageStartTimeRef.current) / 1000).toFixed(2)
+      ),
       first_draw_time: Number((firstDrawTimeRef.current || 0).toFixed(2)),
       multiple: defs.length > 1,
       timed_out: timeUpRef.current,
@@ -436,14 +491,23 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
       pressure_min: stats.min,
       pressure_max: stats.max,
       pressure_event_count: stats.count,
+
+      stroke_count: strokeCountRef.current,
+      classification_attempts_total: classificationAttemptsRef.current,
+      wrong_classification_attempts: wrongClassificationAttemptsRef.current,
+      solved_before_timeout:
+        marked.length === defs.length &&
+        correctClassifications === defs.length &&
+        !timeUpRef.current,
+      avg_stroke_points: avgStrokePoints,
+      avg_box_area: avgBoxArea,
+      total_draw_distance: totalDrawDistance,
     };
 
     setImageResults((prevResults) => {
       const updated = [...prevResults, result];
 
       if (currentIdx < totalImages - 1) {
-        // Reset per-image state first, then advance index.
-        // This ensures the image-load useEffect fires into clean state.
         resetImageState();
         const nextIdx = currentIdx + 1;
         imageIdxRef.current = nextIdx;
@@ -453,33 +517,76 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
         const detectedDefects = updated.reduce((s, r) => s + r.detected_defects, 0);
         const missedDefects = updated.reduce((s, r) => s + r.missed_defects, 0);
         const totalFalseMarks = updated.reduce((s, r) => s + r.false_marks, 0);
-        const totalCorrectClassifications = updated.reduce((s, r) => s + r.correct_classifications, 0);
+        const totalCorrectClassifications = updated.reduce(
+          (s, r) => s + r.correct_classifications,
+          0
+        );
         const totalTime = updated.reduce((s, r) => s + r.time_taken, 0);
         const hesitations = updated.filter((r) => r.first_draw_time > 2).length;
-        const avgPressure = updated.reduce((s, r) => s + (r.pressure_avg || 0), 0) / updated.length;
-        const avgPressureVariation = updated.reduce((s, r) => s + (r.pressure_variation || 0), 0) / updated.length;
-        const detectionAccuracy = totalDefects > 0 ? detectedDefects / totalDefects : 0;
-        const classificationAccuracy = totalDefects > 0 ? totalCorrectClassifications / totalDefects : 0;
-        const finalAccuracy = 0.7 * detectionAccuracy + 0.3 * classificationAccuracy;
+        const avgPressure =
+          updated.reduce((s, r) => s + (r.pressure_avg || 0), 0) / updated.length;
+        const avgPressureVariation =
+          updated.reduce((s, r) => s + (r.pressure_variation || 0), 0) /
+          updated.length;
+        const detectionAccuracy =
+          totalDefects > 0 ? detectedDefects / totalDefects : 0;
+        const classificationAccuracy =
+          totalDefects > 0 ? totalCorrectClassifications / totalDefects : 0;
+        const finalAccuracy =
+          0.7 * detectionAccuracy + 0.3 * classificationAccuracy;
 
         onComplete({
-          accuracy: Number(finalAccuracy.toFixed(4)),
+          accuracy: Number((finalAccuracy * 100).toFixed(2)),
           completion_time: Number(totalTime.toFixed(2)),
           errors: totalFalseMarks + missedDefects,
           hesitations,
-          corrections: 0,
+          corrections: wrongClassificationAttemptsRef.current,
           task_metrics: {
             total_images: updated.length,
             total_defects: totalDefects,
             detected_defects: detectedDefects,
             missed_defects: missedDefects,
             false_clicks: totalFalseMarks,
-            detection_accuracy: Number(detectionAccuracy.toFixed(4)),
-            classification_accuracy: Number(classificationAccuracy.toFixed(4)),
+            detection_accuracy: Number((detectionAccuracy * 100).toFixed(2)),
+            classification_accuracy: Number((classificationAccuracy * 100).toFixed(2)),
             avg_image_time: Number((totalTime / updated.length).toFixed(4)),
             avg_pressure: Number(avgPressure.toFixed(4)),
             avg_pressure_variation: Number(avgPressureVariation.toFixed(4)),
             image_results: updated,
+
+            stroke_count_total: updated.reduce(
+              (s, r) => s + (r.stroke_count || 0),
+              0
+            ),
+            classification_attempts_total: updated.reduce(
+              (s, r) => s + (r.classification_attempts_total || 0),
+              0
+            ),
+            wrong_classification_attempts_total: updated.reduce(
+              (s, r) => s + (r.wrong_classification_attempts || 0),
+              0
+            ),
+            avg_stroke_points: Number(
+              (
+                updated.reduce((s, r) => s + (r.avg_stroke_points || 0), 0) /
+                updated.length
+              ).toFixed(4)
+            ),
+            avg_box_area: Number(
+              (
+                updated.reduce((s, r) => s + (r.avg_box_area || 0), 0) /
+                updated.length
+              ).toFixed(4)
+            ),
+            avg_draw_distance: Number(
+              (
+                updated.reduce((s, r) => s + (r.total_draw_distance || 0), 0) /
+                updated.length
+              ).toFixed(4)
+            ),
+            solved_before_timeout_count: updated.filter(
+              (r) => r.solved_before_timeout
+            ).length,
           },
         });
       }
@@ -498,11 +605,20 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
   return (
     <div style={styles.wrapper}>
       <div style={styles.topRow}>
-        <div style={styles.pill}>Image {imageIdx + 1} / {totalImages}</div>
-        <div style={styles.pill}>Marked {markedDefects.length} / {defects.length}</div>
+        <div style={styles.pill}>
+          Image {imageIdx + 1} / {totalImages}
+        </div>
+        <div style={styles.pill}>
+          Marked {markedDefects.length} / {defects.length}
+        </div>
         <div style={styles.pillBad}>False marks: {falseMarks}</div>
         {timeLeft !== null && (
-          <div style={{ ...styles.timerPill, ...(danger ? styles.timerDanger : {}) }}>
+          <div
+            style={{
+              ...styles.timerPill,
+              ...(danger ? styles.timerDanger : {}),
+            }}
+          >
             ⏱ {timeLeft}s
           </div>
         )}
@@ -537,23 +653,57 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
           </div>
 
           <div style={styles.legend}>
-            <span><span style={styles.greenDot} /> Correct mark</span>
-            <span><span style={styles.redDot} /> Incorrect mark</span>
+            <span>
+              <span style={styles.greenDot} /> Correct mark
+            </span>
+            <span>
+              <span style={styles.redDot} /> Incorrect mark
+            </span>
           </div>
         </div>
 
         <div style={styles.sidePanel}>
           <div style={styles.sideCard}>
             <div style={styles.sideTitle}>Live Input Metrics</div>
-            <div style={styles.metricRow}><span>Pointer</span><strong>{pointerType}</strong></div>
-            <div style={styles.metricRow}><span>Current pressure</span><strong>{livePressure}</strong></div>
-            <div style={styles.metricRow}><span>Average pressure</span><strong>{pressureStats.avg}</strong></div>
-            <div style={styles.metricRow}><span>Pressure variation</span><strong>{pressureStats.variation}</strong></div>
-            <div style={styles.metricRow}><span>Min pressure</span><strong>{pressureStats.min}</strong></div>
-            <div style={styles.metricRow}><span>Max pressure</span><strong>{pressureStats.max}</strong></div>
-            <div style={styles.metricRow}><span>Pressure events</span><strong>{pressureStats.count}</strong></div>
-            <div style={styles.noteText}>
-              Pen/stylus gives real pressure. Mouse usually provides limited or constant pressure values.
+            <div style={styles.metricRow}>
+              <span>Pointer</span>
+              <strong>{pointerType}</strong>
+            </div>
+            <div style={styles.metricRow}>
+              <span>Current pressure</span>
+              <strong>{livePressure}</strong>
+            </div>
+            <div style={styles.metricRow}>
+              <span>Average pressure</span>
+              <strong>{pressureStats.avg}</strong>
+            </div>
+            <div style={styles.metricRow}>
+              <span>Pressure variation</span>
+              <strong>{pressureStats.variation}</strong>
+            </div>
+            <div style={styles.metricRow}>
+              <span>Min pressure</span>
+              <strong>{pressureStats.min}</strong>
+            </div>
+            <div style={styles.metricRow}>
+              <span>Max pressure</span>
+              <strong>{pressureStats.max}</strong>
+            </div>
+            <div style={styles.metricRow}>
+              <span>Pressure events</span>
+              <strong>{pressureStats.count}</strong>
+            </div>
+            <div style={styles.metricRow}>
+              <span>Stroke count</span>
+              <strong>{strokeCountRef.current}</strong>
+            </div>
+            <div style={styles.metricRow}>
+              <span>Classification attempts</span>
+              <strong>{classificationAttemptsRef.current}</strong>
+            </div>
+            <div style={styles.metricRow}>
+              <span>Wrong classifications</span>
+              <strong>{wrongClassificationAttemptsRef.current}</strong>
             </div>
           </div>
         </div>
@@ -580,84 +730,50 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
       {classificationOpen && (
         <div style={styles.overlay}>
           <div style={styles.modal}>
-            <div style={{
-              ...styles.modalBadge,
-              ...(wrongClassification ? { background: "#7f1d1d", color: "#fecaca" } : {}),
-            }}>
-              {wrongClassification ? "Wrong Classification" : "Defect Classification"}
-            </div>
-
-            {wrongClassification ? (
-              <>
-                <h3 style={styles.modalTitle}>That's not right — try again</h3>
-                <p style={{ ...styles.modalText, color: "#fca5a5" }}>
-                  <strong style={{ color: "#fecaca" }}>{wrongClassification}</strong> is incorrect.
-                  Select the correct defect type.
-                </p>
-              </>
-            ) : (
-              <>
-                <h3 style={styles.modalTitle}>Select the defect type</h3>
-                <p style={styles.modalText}>
-                  Choose the option that best matches the defect you marked.
-                </p>
-              </>
-            )}
+            <div style={styles.badge}>Defect Classification</div>
+            <h3 style={styles.modalTitle}>Select the defect type</h3>
+            <p style={styles.modalText}>
+              Choose the option that best matches the defect you marked.
+            </p>
 
             <div style={styles.optionGrid}>
-              {DEFECT_OPTIONS.map((opt) => {
-                const isWrong = opt === wrongClassification;
-                return (
-                  <button
-                    key={opt}
-                    disabled={isWrong}
-                    style={{
-                      ...styles.optionButton,
-                      ...(isWrong ? {
-                        background: "#3f1d1d",
-                        borderColor: "#ef4444",
-                        color: "#fca5a5",
-                        cursor: "not-allowed",
-                        opacity: 0.6,
-                      } : {}),
-                    }}
-                    onMouseEnter={(e) => {
-                      if (isWrong) return;
-                      e.currentTarget.style.background = "#1e293b";
-                      e.currentTarget.style.borderColor = "#60a5fa";
-                      e.currentTarget.style.color = "#bfdbfe";
-                    }}
-                    onMouseLeave={(e) => {
-                      if (isWrong) return;
-                      e.currentTarget.style.background = styles.optionButton.background;
-                      e.currentTarget.style.borderColor = "#334155";
-                      e.currentTarget.style.color = styles.optionButton.color;
-                    }}
-                    onClick={() => !isWrong && handleClassification(opt)}
-                  >
-                    {opt}
-                    {isWrong && <span style={{ marginLeft: 6, fontSize: 11 }}>✗</span>}
-                  </button>
-                );
-              })}
+              {DEFECT_OPTIONS.map((opt) => (
+                <button
+                  key={opt}
+                  style={styles.optionButton}
+                  onClick={() => handleClassification(opt)}
+                >
+                  {opt}
+                </button>
+              ))}
             </div>
+
+            {wrongClassification && (
+              <div style={styles.wrongNotice}>
+                Wrong selection: <strong>{wrongClassification}</strong>. Try again.
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      <style>{`
-        @keyframes pulseDanger {
-          0%   { transform: scale(1);    box-shadow: 0 0 0   rgba(239,68,68,0.0); }
-          50%  { transform: scale(1.05); box-shadow: 0 0 16px rgba(239,68,68,0.35); }
-          100% { transform: scale(1);    box-shadow: 0 0 0   rgba(239,68,68,0.0); }
-        }
-      `}</style>
+      <style>
+        {`
+          @keyframes pulseDanger {
+            0% { transform: scale(1); box-shadow: 0 0 0 rgba(239,68,68,0.0); }
+            50% { transform: scale(1.05); box-shadow: 0 0 16px rgba(239,68,68,0.35); }
+            100% { transform: scale(1); box-shadow: 0 0 0 rgba(239,68,68,0.0); }
+          }
+        `}
+      </style>
     </div>
   );
 }
 
 const styles = {
-  wrapper: { marginTop: 16 },
+  wrapper: {
+    marginTop: 16,
+  },
   topRow: {
     display: "flex",
     justifyContent: "center",
@@ -671,8 +787,14 @@ const styles = {
     alignItems: "flex-start",
     flexWrap: "wrap",
   },
-  leftPane: { flex: "1 1 500px", minWidth: 0 },
-  sidePanel: { flex: "0 0 260px", width: 260 },
+  leftPane: {
+    flex: "1 1 500px",
+    minWidth: 0,
+  },
+  sidePanel: {
+    flex: "0 0 260px",
+    width: 260,
+  },
   pill: {
     background: "#1e293b",
     color: "#e2e8f0",
@@ -717,7 +839,11 @@ const styles = {
     color: "#bfdbfe",
     marginBottom: 6,
   },
-  instructionText: { color: "#e2e8f0", lineHeight: 1.5, fontSize: 14 },
+  instructionText: {
+    color: "#e2e8f0",
+    lineHeight: 1.5,
+    fontSize: 14,
+  },
   canvasCard: {
     background: "#0f172a",
     border: "1px solid #334155",
@@ -732,33 +858,6 @@ const styles = {
     border: "1px solid #475569",
     background: "#0f172a",
     maxWidth: "100%",
-    touchAction: "none",
-  },
-  legend: {
-    display: "flex",
-    gap: 16,
-    marginTop: 10,
-    fontSize: 13,
-    color: "#94a3b8",
-    alignItems: "center",
-  },
-  greenDot: {
-    display: "inline-block",
-    width: 10,
-    height: 10,
-    borderRadius: "50%",
-    background: "#22c55e",
-    marginRight: 5,
-    verticalAlign: "middle",
-  },
-  redDot: {
-    display: "inline-block",
-    width: 10,
-    height: 10,
-    borderRadius: "50%",
-    background: "#ef4444",
-    marginRight: 5,
-    verticalAlign: "middle",
   },
   sideCard: {
     background: "#111827",
@@ -767,7 +866,12 @@ const styles = {
     padding: 16,
     boxShadow: "0 10px 30px rgba(0,0,0,0.25)",
   },
-  sideTitle: { fontSize: 15, fontWeight: 700, color: "#bfdbfe", marginBottom: 12 },
+  sideTitle: {
+    fontSize: 15,
+    fontWeight: 700,
+    color: "#bfdbfe",
+    marginBottom: 12,
+  },
   metricRow: {
     display: "flex",
     justifyContent: "space-between",
@@ -777,60 +881,109 @@ const styles = {
     color: "#e5e7eb",
     fontSize: 13,
   },
-  noteText: { marginTop: 12, color: "#94a3b8", fontSize: 12, lineHeight: 1.5 },
-  buttonRow: { display: "flex", justifyContent: "flex-end", marginTop: 16 },
+  legend: {
+    marginTop: 12,
+    display: "flex",
+    justifyContent: "center",
+    gap: 20,
+    flexWrap: "wrap",
+    color: "#cbd5e1",
+    fontSize: 13,
+  },
+  greenDot: {
+    display: "inline-block",
+    width: 10,
+    height: 10,
+    borderRadius: "50%",
+    background: "#22c55e",
+    marginRight: 6,
+  },
+  redDot: {
+    display: "inline-block",
+    width: 10,
+    height: 10,
+    borderRadius: "50%",
+    background: "#ef4444",
+    marginRight: 6,
+  },
+  buttonRow: {
+    display: "flex",
+    justifyContent: "center",
+    marginTop: 18,
+  },
   nextButton: {
-    background: "#2563eb",
-    color: "#fff",
+    background: "linear-gradient(135deg, #22c55e, #16a34a)",
+    color: "#08110b",
     border: "none",
-    borderRadius: 10,
-    padding: "12px 28px",
-    fontSize: 14,
+    padding: "12px 22px",
+    borderRadius: 12,
     fontWeight: 700,
-    transition: "background 0.15s",
+    fontSize: 15,
+    boxShadow: "0 10px 20px rgba(34,197,94,0.2)",
   },
   overlay: {
     position: "fixed",
     inset: 0,
-    background: "rgba(0,0,0,0.6)",
+    background: "rgba(2,6,23,0.72)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    zIndex: 1000,
+    zIndex: 999,
+    padding: 20,
   },
   modal: {
-    background: "#1e293b",
+    width: "100%",
+    maxWidth: 520,
+    background: "#0f172a",
     border: "1px solid #334155",
     borderRadius: 20,
-    padding: "28px 32px",
-    maxWidth: 400,
-    width: "90%",
-    boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
+    padding: 24,
+    boxShadow: "0 30px 60px rgba(0,0,0,0.45)",
   },
-  modalBadge: {
+  badge: {
     display: "inline-block",
-    background: "#1d4ed8",
-    color: "#bfdbfe",
-    fontSize: 11,
+    background: "#312e81",
+    color: "#c7d2fe",
+    padding: "6px 10px",
+    borderRadius: 999,
+    fontSize: 12,
     fontWeight: 700,
-    letterSpacing: "0.08em",
-    textTransform: "uppercase",
-    padding: "4px 10px",
-    borderRadius: 6,
     marginBottom: 12,
   },
-  modalTitle: { fontSize: 18, fontWeight: 700, color: "#f1f5f9", margin: "0 0 8px" },
-  modalText: { fontSize: 13, color: "#94a3b8", marginBottom: 20, lineHeight: 1.5 },
-  optionGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 },
+  modalTitle: {
+    margin: 0,
+    fontSize: 24,
+    color: "#f8fafc",
+  },
+  modalText: {
+    marginTop: 8,
+    marginBottom: 18,
+    color: "#cbd5e1",
+    lineHeight: 1.5,
+  },
+  optionGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 12,
+  },
   optionButton: {
-    background: "#0f172a",
-    color: "#e2e8f0",
+    background: "#1e293b",
+    color: "#f8fafc",
     border: "1px solid #334155",
-    borderRadius: 10,
-    padding: "12px 8px",
-    fontSize: 13,
-    fontWeight: 600,
+    padding: "14px 12px",
+    borderRadius: 14,
     cursor: "pointer",
-    transition: "all 0.15s",
+    fontWeight: 700,
+    fontSize: 14,
+  },
+  wrongNotice: {
+    marginTop: 16,
+    padding: 12,
+    borderRadius: 12,
+    background: "#3f1d1d",
+    color: "#fecaca",
+    border: "1px solid #7f1d1d",
+    textAlign: "center",
+    fontSize: 14,
   },
 };
