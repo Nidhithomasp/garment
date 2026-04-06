@@ -1,0 +1,6 @@
+body { font-family: Arial; background:#f4f4f4; }
+.center { text-align:center; margin-top:100px; }
+.container { padding:20px; text-align:center; }
+canvas { border:1px solid black; margin:20px; }
+button { padding:10px 20px; margin:10px; }
+.self input { margin:5px; }
