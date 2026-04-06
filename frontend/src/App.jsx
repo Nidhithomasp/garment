@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import DefectDetectionTask from "./tasks/DefectDetectionTask";
-
 import LabelCheckingTask from "./tasks/LabelCheckingTask";
+import BundleVerificationTask from "./tasks/BundleVerificationTask";
 
 const API = "http://localhost:8000";
 
@@ -17,14 +17,14 @@ const TASKS = [
   },
   // FIX 1: Removed double comma that caused syntax error
   {
-  id: 2,
-  name: "Label Checking",
-  icon: "🏷️",
-  instruction:
-    "Compare the reference details with the garment label. Do not assume a mismatch exists. Edit the label only if needed, or choose No Mismatch, then click Submit.",
-  canvasPrompt: "Compare details, edit if needed, or choose No Mismatch",
-  color: "#7c3aed",
-},
+    id: 2,
+    name: "Label Checking",
+    icon: "🏷️",
+    instruction:
+      "Check whether the garment label matches the displayed details. Mark mismatch areas carefully.",
+    canvasPrompt: "Mark mismatched area",
+    color: "#7c3aed",
+  },
   {
     id: 3,
     name: "Bundle Verification",
@@ -54,8 +54,8 @@ const TASKS = [
 
 const LEVELS = [
   { key: "easy", label: "Easy", timer: null, color: "#4ade80" },
-  { key: "medium", label: "Medium", timer: 15, color: "#f59e0b" },
-  { key: "hard", label: "Hard", timer: 10, color: "#ef4444" },
+  { key: "medium", label: "Medium", timer: 35, color: "#f59e0b" },
+  { key: "hard", label: "Hard", timer: 20, color: "#ef4444" },
 ];
 
 // FIX 2: Batch and flush stylus events to /api/behavior
@@ -71,16 +71,16 @@ async function flushBehaviorBatch(sessionId, taskId, levelKey, events) {
         task_id: taskId,
         level: levelKey,
         events: events.map((e) => ({
-  session_id: sessionId,
-  task_id: taskId,
-  level: levelKey,
-  x: e.x ?? 0,
-  y: e.y ?? 0,
-  pressure: e.pressure ?? 0.5,
-  timestamp: e.timestamp ?? 0,
-  pointer_type: e.pointerType ?? "mouse",
-  event_type: e.eventType ?? "move",
-})),
+          session_id: sessionId,
+          task_id: taskId,
+          level: levelKey,
+          x: e.x ?? 0,
+          y: e.y ?? 0,
+          pressure: e.pressure ?? 0.5,
+          timestamp: e.timestamp ?? 0,
+          pointer_type: e.pointerType ?? "mouse",
+          event_type: "move",
+        })),
       }),
     });
   } catch (err) {
@@ -138,8 +138,8 @@ export default function App() {
   async function submitTaskResultWithSelfReport() {
     if (!pendingTaskResult) return;
 
-    // FIX 5: Flush generic task behavior events before submitting
-    if (task.id !== 1 && genericEventsRef.current.length > 0) {
+    // Flush generic task behavior events (tasks 4/5 only)
+    if (task.id !== 1 && task.id !== 2 && task.id !== 3 && genericEventsRef.current.length > 0) {
       await flushBehaviorBatch(
         sessionId,
         task.id,
@@ -149,10 +149,65 @@ export default function App() {
       genericEventsRef.current = [];
     }
 
-    // FIX 6: Map task_metrics fields to what the backend expects
-    // DefectDetectionTask returns detection_accuracy, classification_accuracy,
-    // false_clicks, missed_defects nested inside task_metrics — pass them through directly
     const taskMetrics = pendingTaskResult.task_metrics || {};
+
+    // Build the task_metrics payload — fields vary by task type
+    let metricsPayload = {};
+
+    if (task.id === 1) {
+      // Defect Detection
+      metricsPayload = {
+        detection_accuracy: taskMetrics.detection_accuracy ?? null,
+        classification_accuracy: taskMetrics.classification_accuracy ?? null,
+        false_clicks: taskMetrics.false_clicks ?? 0,
+        missed_defects: taskMetrics.missed_defects ?? 0,
+        total_images: taskMetrics.total_images ?? null,
+        total_defects: taskMetrics.total_defects ?? null,
+        detected_defects: taskMetrics.detected_defects ?? null,
+        avg_image_time: taskMetrics.avg_image_time ?? null,
+        avg_pressure: taskMetrics.avg_pressure ?? null,
+        avg_pressure_variation: taskMetrics.avg_pressure_variation ?? null,
+        image_results: taskMetrics.image_results ?? [],
+      };
+    } else if (task.id === 2) {
+      // Label Checking
+      metricsPayload = {
+        total_questions: taskMetrics.total_questions ?? null,
+        correct_answers: taskMetrics.correct_answers ?? null,
+        skipped_questions: taskMetrics.skipped_questions ?? 0,
+        timed_out_questions: taskMetrics.timed_out_questions ?? 0,
+        wrong_submits: taskMetrics.wrong_submits ?? 0,
+        avg_question_time: taskMetrics.avg_question_time ?? null,
+        question_results: taskMetrics.question_results ?? [],
+      };
+    } else if (task.id === 3) {
+      // Bundle Verification
+      metricsPayload = {
+        total_bundles: taskMetrics.total_bundles ?? null,
+        wrong_bundles: taskMetrics.wrong_bundles ?? null,
+        correct_selections: taskMetrics.correct_selections ?? null,
+        wrong_selections: taskMetrics.wrong_selections ?? 0,
+        missed_bundles: taskMetrics.missed_bundles ?? 0,
+        timed_out: taskMetrics.timed_out ?? false,
+        wrong_submits: taskMetrics.wrong_submits ?? 0,
+        submit_attempts_total: taskMetrics.submit_attempts_total ?? 0,
+        total_clicks: taskMetrics.total_clicks ?? 0,
+        unique_clicks: taskMetrics.unique_clicks ?? 0,
+        repeated_clicks: taskMetrics.repeated_clicks ?? 0,
+        avg_selection_time: taskMetrics.avg_selection_time ?? null,
+        first_action_time: taskMetrics.first_action_time ?? null,
+        precision: taskMetrics.precision ?? null,
+        recall: taskMetrics.recall ?? null,
+        f1_score: taskMetrics.f1_score ?? null,
+        false_alarm_rate: taskMetrics.false_alarm_rate ?? null,
+        miss_rate: taskMetrics.miss_rate ?? null,
+        overclick_ratio: taskMetrics.overclick_ratio ?? null,
+        bundle_results: taskMetrics.bundle_results ?? [],
+      };
+    } else {
+      // Generic tasks 4/5 — no structured metrics yet
+      metricsPayload = {};
+    }
 
     try {
       await fetch(`${API}/api/task-complete`, {
@@ -168,21 +223,7 @@ export default function App() {
           hesitations: pendingTaskResult.hesitations,
           corrections: pendingTaskResult.corrections,
           self_report: selfReport,
-          task_metrics: {
-            // Core defect detection metrics the backend stress model reads
-            detection_accuracy: taskMetrics.detection_accuracy ?? null,
-            classification_accuracy: taskMetrics.classification_accuracy ?? null,
-            false_clicks: taskMetrics.false_clicks ?? 0,
-            missed_defects: taskMetrics.missed_defects ?? 0,
-            // Extra detail for logging / future use
-            total_images: taskMetrics.total_images ?? null,
-            total_defects: taskMetrics.total_defects ?? null,
-            detected_defects: taskMetrics.detected_defects ?? null,
-            avg_image_time: taskMetrics.avg_image_time ?? null,
-            avg_pressure: taskMetrics.avg_pressure ?? null,
-            avg_pressure_variation: taskMetrics.avg_pressure_variation ?? null,
-            image_results: taskMetrics.image_results ?? [],
-          },
+          task_metrics: metricsPayload,
         }),
       });
     } catch (err) {
@@ -225,9 +266,9 @@ export default function App() {
     setPhase("results");
   }
 
-  // FIX 7: Timer only runs for non-task-1 tasks (task 1 handles its own timer)
+  // Timer only runs for tasks 4/5 — tasks 1, 2, 3 manage their own timers
   useEffect(() => {
-    if (phase !== "task" || task.id === 1) {
+    if (phase !== "task" || task.id === 1 || task.id === 2 || task.id === 3) {
       setTimeLeft(null);
       return;
     }
@@ -256,7 +297,7 @@ export default function App() {
   }, [phase, task.id, level.key, level.timer]);
 
   useEffect(() => {
-    if (phase !== "task" || task.id === 1) return;
+    if (phase !== "task" || task.id === 1 || task.id === 2 || task.id === 3) return;
 
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -452,10 +493,26 @@ export default function App() {
             <p style={styles.subtitle}>{task.instruction}</p>
 
             {task.id === 1 && (
-  <div style={styles.noteBox}>
-    Each level contains 2 images. Draw around the visible defect area and classify it. Some images may contain multiple defects. Medium images are timed for 15 seconds and hard images are timed for 10 seconds.
-  </div>
-)}
+              <div style={styles.noteBox}>
+                Each level contains 2 images. Draw around each defect, then
+                classify it.
+              </div>
+            )}
+
+            {task.id === 2 && (
+              <div style={styles.noteBox}>
+                Compare the reference details with the garment label. Edit only
+                the mismatched fields, then submit. If everything matches, click
+                "No Mismatch" before submitting.
+              </div>
+            )}
+
+            {task.id === 3 && (
+              <div style={styles.noteBox}>
+                You will see several bundles. Click every bundle that does{" "}
+                <strong>not</strong> match the expected spec, then submit.
+              </div>
+            )}
 
             <button style={styles.primaryBtn} onClick={() => setPhase("task")}>
               Begin
@@ -473,8 +530,8 @@ export default function App() {
 
               <div style={styles.topStats}>
                 <div style={styles.statPill}>{level.label}</div>
-                {/* FIX 9: Only show App-level timer for non-task-1 tasks */}
-                {task.id !== 1 && timeLeft !== null && (
+                {/* Tasks 1, 2, 3 manage their own timers internally */}
+                {task.id !== 1 && task.id !== 2 && task.id !== 3 && timeLeft !== null && (
                   <div style={styles.statPill}>⏱ {timeLeft}s</div>
                 )}
               </div>
@@ -486,8 +543,17 @@ export default function App() {
                 task={task}
                 sessionId={sessionId}
                 onComplete={handleTaskComplete}
-                // FIX 10: Pass behavior flush callback so task can send events up
                 onBehavior={handleBehavior}
+              />
+            ) : task.id === 2 ? (
+              <LabelCheckingTask
+                level={level}
+                onComplete={handleTaskComplete}
+              />
+            ) : task.id === 3 ? (
+              <BundleVerificationTask
+                level={level}
+                onComplete={handleTaskComplete}
               />
             ) : (
               <>
@@ -584,18 +650,31 @@ export default function App() {
 
                       {t.task_metrics?.total_images && (
                         <>
-                          <div>
-                            Detection Accuracy:{" "}
-                            {t.task_metrics.detection_accuracy}
-                          </div>
-                          <div>
-                            Classification Accuracy:{" "}
-                            {t.task_metrics.classification_accuracy}
-                          </div>
+                          <div>Detection Accuracy: {t.task_metrics.detection_accuracy}</div>
+                          <div>Classification Accuracy: {t.task_metrics.classification_accuracy}</div>
                           <div>False Clicks: {t.task_metrics.false_clicks}</div>
-                          <div>
-                            Missed Defects: {t.task_metrics.missed_defects}
-                          </div>
+                          <div>Missed Defects: {t.task_metrics.missed_defects}</div>
+                        </>
+                      )}
+
+                      {t.task_metrics?.total_questions != null && (
+                        <>
+                          <div>Questions: {t.task_metrics.correct_answers} / {t.task_metrics.total_questions} correct</div>
+                          <div>Wrong Submits: {t.task_metrics.wrong_submits}</div>
+                          <div>Skipped: {t.task_metrics.skipped_questions}</div>
+                          <div>Timed Out: {t.task_metrics.timed_out_questions}</div>
+                          <div>Avg Time / Question: {t.task_metrics.avg_question_time}s</div>
+                        </>
+                      )}
+
+                      {t.task_metrics?.total_bundles != null && (
+                        <>
+                          <div>Bundles: {t.task_metrics.correct_selections} / {t.task_metrics.wrong_bundles} wrong bundles found</div>
+                          <div>Wrong Selections: {t.task_metrics.wrong_selections}</div>
+                          <div>Missed Bundles: {t.task_metrics.missed_bundles}</div>
+                          <div>Wrong Submits: {t.task_metrics.wrong_submits}</div>
+                          <div>F1 Score: {t.task_metrics.f1_score}</div>
+                          <div>Precision: {t.task_metrics.precision} · Recall: {t.task_metrics.recall}</div>
                         </>
                       )}
                     </div>
