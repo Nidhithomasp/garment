@@ -60,16 +60,17 @@ export default function App() {
     }
 
     const payload = {
-      session_id: sessionId,
-      task_id: task.id,
-      level: level.key,
-      accuracy: pendingTaskResult?.accuracy ?? 0,
-      completion_time: pendingTaskResult?.completion_time ?? 0,
-      errors: pendingTaskResult?.errors ?? 0,
-      hesitations: pendingTaskResult?.hesitations ?? 0,
-      corrections: pendingTaskResult?.corrections ?? 0,
-      self_report: selfReport,
-    };
+  session_id: sessionId,
+  task_id: task.id,
+  level: level.key,
+  accuracy: pendingTaskResult?.accuracy ?? 0,
+  completion_time: pendingTaskResult?.completion_time ?? 0,
+  errors: pendingTaskResult?.errors ?? 0,
+  hesitations: pendingTaskResult?.hesitations ?? 0,
+  corrections: pendingTaskResult?.corrections ?? 0,
+  self_report: selfReport,
+  task_metrics: pendingTaskResult?.task_metrics || {}   // 🔥 ADD THIS
+};
 
     console.log("SENDING:", payload);
 

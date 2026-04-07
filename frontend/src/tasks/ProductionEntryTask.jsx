@@ -114,7 +114,28 @@ export default function ProductionEntryTask({ level, onComplete }) {
       hesitations: 0, // placeholder (can improve later)
     };
 
-    onComplete(result);
+    onComplete({
+  accuracy: isCorrect ? 100 : 0,
+  completion_time: timeTaken,
+  errors: errorCount,
+  hesitations: firstAttemptRef.current ? (firstAttemptRef.current / 1000 > 2 ? 1 : 0) : 0,
+  corrections: corrections + errorCount,
+
+  task_metrics: {
+    efficiency: parseFloat(efficiency.toFixed(2)),
+    productivity: parseFloat(productivity.toFixed(2)),
+    wrong_submits: errorCount,
+    submit_attempts_total: submitAttempts,
+    first_attempt_time: firstAttemptRef.current
+      ? Number((firstAttemptRef.current / 1000).toFixed(2))
+      : null,
+    avg_attempt_time:
+      submitAttempts > 0 ? Number((timeTaken / submitAttempts).toFixed(2)) : null,
+    input_variability:
+      submitAttempts > 0 ? Number((corrections / submitAttempts).toFixed(2)) : null,
+    time_to_correct: isCorrect ? timeTaken : null
+  }
+});
   };
 
   const handleSkip = () => {

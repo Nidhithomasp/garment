@@ -73,7 +73,7 @@ function finalizeLevel(results, onComplete) {
     completion_time:  Number(totalTime.toFixed(2)),
     errors:           total - correctCount + wrongSubmitTotal,
     hesitations,
-    corrections:      totalEdits,
+    corrections:     totalEdits + wrongSubmitTotal,
     task_metrics: {
       total_questions:    total,
       correct_answers:    correctCount,

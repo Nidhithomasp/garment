@@ -154,7 +154,7 @@ export default function BundleVerificationTask({ level, onComplete }) {
       completion_time: Number(totalTime.toFixed(2)),
       errors: wrongSelections + missedBundles + wrongSubmits,
       hesitations: firstClickTime > 2 ? 1 : 0,
-      corrections: totalClicks,
+      corrections: totalClicks + wrongSubmits,
 
       task_metrics: {
         total_bundles: bundles.length,
@@ -175,6 +175,7 @@ export default function BundleVerificationTask({ level, onComplete }) {
         precision: Number(precision.toFixed(3)),
         recall: Number(recall.toFixed(3)),
         f1_score: Number(f1.toFixed(3)),
+        accuracy_percent: Number((accuracy * 100).toFixed(2)),
 
         timed_out: timedOut
       }

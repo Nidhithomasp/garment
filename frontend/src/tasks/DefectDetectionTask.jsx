@@ -540,7 +540,7 @@ export default function DefectDetectionTask({ level, onComplete, onBehavior }) {
           completion_time: Number(totalTime.toFixed(2)),
           errors: totalFalseMarks + missedDefects,
           hesitations,
-          corrections: wrongClassificationAttemptsRef.current,
+          corrections:updated.reduce((s, r) => s + (r.stroke_count || 0), 0),
           task_metrics: {
             total_images: updated.length,
             total_defects: totalDefects,
