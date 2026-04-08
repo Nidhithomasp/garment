@@ -121,11 +121,35 @@ def compute_stress(task):
     cognitive = sum(scores) / len(scores) if scores else 0.0
 
     # ── FINAL SCORE ────────────────────────────────────────────────────
-    score = min(1.0, 0.5 * perf + 0.2 * behavior + 0.3 * cognitive)
+    # ---------------- SELF REPORT ----------------
+    # ---------------- SELF REPORT (FIXED) ----------------
+    sr = task.get("self_report")
+    self_stress = 0
+    if sr:
+        # convert pydantic → dict if needed
+        if hasattr(sr, "dict"):
+            sr = sr.dict()
+        try:
+            self_stress = (sr["stress"] + sr["fatigue"] + sr["difficulty"]) / 3
+            self_stress = (self_stress - 1) / 4   # normalize 1–5 → 0–1
+        except:
+            self_stress = 0
+    # ---------------- SYSTEM STRESS ----------------
+    system_stress = min(1.0, 0.5 * perf + 0.2 * behavior + 0.3 * cognitive)
+    # ---------------- ADAPTIVE FUSION (IMPROVED) ---------------
+    if self_stress > 0.7:
+        score = 0.5 * system_stress + 0.5 * self_stress
+    else:
+        score = 0.8 * system_stress + 0.2 * self_stress
+    score = min(1.0, score)
+    # ---------------- STORE FOR DEBUG / FRONTEND ----------------
+    task["system_stress"] = round(system_stress, 3)
+    task["self_stress"] = round(self_stress, 3)
+    
 
-    if score < 0.33:
+    if score < 0.3:
         label = "Low"
-    elif score < 0.66:
+    elif score < 0.7:
         label = "Medium"
     else:
         label = "High"
@@ -152,18 +176,24 @@ def task_complete(body: TaskComplete):
     sessions[body.session_id].append(task)
 
     return {
-        "task_id":          task["task_id"],
-        "level":            task["level"],
-        "stress_score":     stress["score"],
-        "stress_label":     stress["label"],
-        "accuracy":         task["accuracy"],
-        "completion_time":  task["completion_time"],
-        "errors":           task["errors"],
-        "hesitations":      task["hesitations"],
-        "corrections":      task["corrections"],
-        "self_report":      task["self_report"],
-        "task_metrics":     task.get("task_metrics", {}),
-    }
+    "task_id": task["task_id"],
+    "level": task["level"],
+    "stress_score": stress["score"],
+    "stress_label": stress["label"],
+
+    # 🔥 ADD THIS LINE HERE
+    "fusion_type": "adaptive",
+
+    "system_stress": task.get("system_stress"),
+    "self_stress": task.get("self_stress"),
+    "accuracy": task["accuracy"],
+    "completion_time": task["completion_time"],
+    "errors": task["errors"],
+    "hesitations": task["hesitations"],
+    "corrections": task["corrections"],
+    "self_report": task["self_report"],
+    "task_metrics": task.get("task_metrics", {}),
+}
 
 
 @app.get("/api/session/{sid}")
@@ -180,18 +210,23 @@ def get_session(sid: str):
         s = t["stress"]["score"]
         scores.append(s)
         results.append({
-            "task_id":         t["task_id"],
-            "level":           t["level"],
-            "stress_score":    t["stress"]["score"],
-            "stress_label":    t["stress"]["label"],
-            "accuracy":        t["accuracy"],
-            "completion_time": t["completion_time"],
-            "errors":          t["errors"],
-            "hesitations":     t["hesitations"],
-            "corrections":     t["corrections"],
-            "self_report":     t["self_report"],
-            "task_metrics":    t.get("task_metrics", {}),
-        })
+    "task_id":         t["task_id"],
+    "level":           t["level"],
+    "stress_score":    t["stress"]["score"],
+    "stress_label":    t["stress"]["label"],
+
+    # 🔥 ADD THESE
+    "system_stress":   t.get("system_stress"),
+    "self_stress":     t.get("self_stress"),
+
+    "accuracy":        t["accuracy"],
+    "completion_time": t["completion_time"],
+    "errors":          t["errors"],
+    "hesitations":     t["hesitations"],
+    "corrections":     t["corrections"],
+    "self_report":     t["self_report"],
+    "task_metrics":    t.get("task_metrics", {}),
+})
 
     overall = sum(scores) / len(scores)
     label   = "Low" if overall < 0.33 else "Medium" if overall < 0.66 else "High"

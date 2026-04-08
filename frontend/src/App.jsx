@@ -57,6 +57,7 @@ export default function App() {
   const [sessionResult,    setSessionResult]    = useState(null);
   const [pendingTaskResult,setPendingTaskResult] = useState(null);
   const [selfReport,       setSelfReport]       = useState({ stress: 3, fatigue: 3, difficulty: 3 });
+  const [productivity, setProductivity] = useState(null);
 
   const task  = TASKS[taskIdx];
   const level = LEVELS[levelIdx];
@@ -127,9 +128,24 @@ export default function App() {
   async function loadResults(sid) {
     try {
       const res  = await fetch(`${API}/api/session/${sid}`);
-      const data = await res.json();
-      setSessionResult(data);
-      setPhase("results");
+const data = await res.json();
+setSessionResult(data);
+setPhase("results");
+
+// 🔥 ADD THIS BLOCK
+const res2 = await fetch(`${API}/api/productivity`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    industry: "garment",
+    team_id: 1,
+    stress_score: data.overall_score
+  })
+});
+
+const prodData = await res2.json();
+setProductivity(prodData);
+     
     } catch (err) {
       console.error("Results fetch error:", err);
     }
@@ -249,15 +265,30 @@ export default function App() {
                     </span>
                   </div>
                   <div style={styles.statGrid}>
-                    <div style={styles.statCol}>Accuracy: <b>{t.accuracy}%</b></div>
-                    <div style={styles.statCol}>Time: <b>{t.completion_time}s</b></div>
-                    <div style={styles.statCol}>Errors: <b>{t.errors}</b></div>
-                    <div style={styles.statCol}>Stress Score: <b>{t.stress_score}</b></div>
-                    <div style={styles.statCol}>Hesitations: <b>{t.hesitations}</b></div>
-                    <div style={styles.statCol}>Corrections: <b>{t.corrections}</b></div>
-                    <div style={styles.statCol}>Self-stress: <b>{t.self_report?.stress}</b></div>
-                    <div style={styles.statCol}>Fatigue felt: <b>{t.self_report?.fatigue}</b></div>
-                  </div>
+  <div style={styles.statCol}>
+    Accuracy: <b>{t.accuracy}%</b>
+  </div>
+
+  <div style={styles.statCol}>
+    Time: <b>{t.completion_time}s</b>
+  </div>
+
+  <div style={styles.statCol}>
+    Errors: <b>{t.errors}</b>
+  </div>
+
+  <div style={styles.statCol}>
+    Stress Score: <b>{t.stress_score}</b>
+  </div>
+
+  <div style={styles.statCol}>
+    Hesitations: <b>{t.hesitations}</b>
+  </div>
+
+  <div style={styles.statCol}>
+    Corrections: <b>{t.corrections}</b>
+  </div>
+</div>
                 </div>
               ))}
             </div>
